@@ -24,4 +24,4 @@ jobs:
       env:
         BASE_REF: ${{ github.base_ref }}
         HEAD_REF: ${{ github.head_ref }}
-      run: echo "::notice title=Check for new modules::Checking for new modules in the PR $env:BASE_REF | $env:HEAD_REF | $env:PR"
+      run: if((git diff $env:HEAD_REF $env:BASE_REF --diff-filter=A --name-only -- '**/*.sln').Count -gt 0) { Write-Host "Detected a new module" } else { Write-Host "No new module detected" }
