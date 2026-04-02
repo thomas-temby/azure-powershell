@@ -23,5 +23,5 @@ jobs:
       shell: pwsh
       env:
         BASE_REF: ${{ github.base_ref }}
-        REF: ${{ github.ref }}
+        HEAD_REF: ${{ github.head_ref }}
       run: echo "::notice title=Check for new modules::Checking for new modules in the PR $env:BASE_REF | $env:REF | $env:PR"
