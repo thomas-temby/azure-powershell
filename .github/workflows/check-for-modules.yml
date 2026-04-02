@@ -24,4 +24,4 @@ jobs:
       env:
         BASE_REF: ${{ github.base_ref }}
         HEAD_REF: ${{ github.head_ref }}
-      run: echo "::notice title=Check for new modules::Checking for new modules in the PR $env:BASE_REF | $env:REF | $env:PR"
+      run: echo "::notice title=Check for new modules::Checking for new modules in the PR $env:BASE_REF | $env:HEAD_REF | $env:PR"
