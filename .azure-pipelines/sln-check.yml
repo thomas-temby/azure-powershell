@@ -2,10 +2,10 @@
 # PUBLIC pipeline — detects new .sln files in PRs.
 # Contains NO secrets. Safe to run with PR-sourced YAML.
 #
-# When new .sln files are found, this pipeline:
-#   1. Publishes module names + PR commit SHA as an artifact
-#   2. Triggers the internal sln-trigger-internal pipeline via REST API
-#      (using System.AccessToken — no secrets stored in this pipeline)
+# When new .sln files are found, this pipeline publishes an artifact.
+# An Azure DevOps Service Hook (configured in the public project UI)
+# detects the build completion and triggers sln-trigger-internal in
+# the internal project via an Incoming Webhook service connection.
 #
 # The internal pipeline then:
 #   1. Posts a "pending" GitHub status check ('module-onboarding') to the PR
@@ -15,10 +15,6 @@
 #
 # Configure GitHub branch protection to require the 'module-onboarding'
 # status check so the PR cannot merge until the internal work finishes.
-#
-# PERMISSIONS:
-#   The public project's build service identity needs 'Queue builds'
-#   permission on pipeline 1201 in the internal project.
 
 trigger: none
 
@@ -103,35 +99,3 @@ steps:
     inputs:
       targetPath: '$(Build.ArtifactStagingDirectory)/sln-check'
       artifactName: 'sln-check'
-
-  - pwsh: |
-      $ErrorActionPreference = 'Stop'
-
-      $orgUrl = "$(System.CollectionUri)".TrimEnd('/')
-      $token = "$(System.AccessToken)" | ConvertTo-SecureString -AsPlainText
-
-      # Trigger sln-trigger-internal (pipeline 1201) in the internal project
-      $uri = "$orgUrl/internal/_apis/pipelines/1201/runs?api-version=7.1-preview.1"
-
-      $body = @{
-        resources = @{
-          pipelines = @{
-            'sln-check' = @{
-              version = "$(Build.BuildId)"
-            }
-          }
-        }
-      } | ConvertTo-Json -Depth 10
-
-      Write-Host "Triggering sln-trigger-internal..."
-      Write-Host "POST $uri"
-
-      $response = Invoke-RestMethod -Uri $uri -Method Post `
-        -ContentType 'application/json' `
-        -Authentication Bearer -Token $token `
-        -Body $body
-
-      Write-Host "Triggered run ID: $($response.id)"
-      Write-Host "URL: $($response._links.web.href)"
-    displayName: 'Trigger internal pipeline'
-    condition: eq(variables['hasNewSln'], 'true')
