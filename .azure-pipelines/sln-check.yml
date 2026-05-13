@@ -1,16 +1,24 @@
-# .pipelines/sln-check.yml
+# .azure-pipelines/sln-check.yml
 # PUBLIC pipeline — detects new .sln files in PRs.
 # Contains NO secrets. Safe to run with PR-sourced YAML.
 #
-# When new .sln files are found, this pipeline publishes an artifact
-# consumed by an internal pipeline (sln-trigger-internal) that:
+# When new .sln files are found, this pipeline:
+#   1. Publishes module names + PR commit SHA as an artifact
+#   2. Triggers the internal sln-trigger-internal pipeline via REST API
+#      (using System.AccessToken — no secrets stored in this pipeline)
+#
+# The internal pipeline then:
 #   1. Posts a "pending" GitHub status check ('module-onboarding') to the PR
-#   2. Triggers internal pipeline 678 for each new module
-#   3. Waits for pipeline 678 to complete
+#   2. Creates a PR in MCR with the new module manifest entries
+#   3. Waits for the MCR PR to be merged
 #   4. Posts "success" or "failure" to the same GitHub status check
 #
 # Configure GitHub branch protection to require the 'module-onboarding'
 # status check so the PR cannot merge until the internal work finishes.
+#
+# PERMISSIONS:
+#   The public project's build service identity needs 'Queue builds'
+#   permission on pipeline 1201 in the internal project.
 
 trigger: none
 
@@ -54,8 +62,8 @@ steps:
 
       $slnList = @($newSlnFiles -split "`n" | Where-Object { $_.Trim() -ne '' })
 
-      if ($slnList.Count -gt 5) {
-        Write-Error "Too many new .sln files ($($slnList.Count)). Refusing to proceed — maximum is 5."
+      if ($slnList.Count -gt 10) {
+        Write-Error "Too many new .sln files ($($slnList.Count)). Refusing to proceed — maximum is 10."
         exit 1
       }
 
@@ -95,3 +103,35 @@ steps:
     inputs:
       targetPath: '$(Build.ArtifactStagingDirectory)/sln-check'
       artifactName: 'sln-check'
+
+  - pwsh: |
+      $ErrorActionPreference = 'Stop'
+
+      $orgUrl = "$(System.CollectionUri)".TrimEnd('/')
+      $token = "$(System.AccessToken)" | ConvertTo-SecureString -AsPlainText
+
+      # Trigger sln-trigger-internal (pipeline 1201) in the internal project
+      $uri = "$orgUrl/internal/_apis/pipelines/1201/runs?api-version=7.1-preview.1"
+
+      $body = @{
+        resources = @{
+          pipelines = @{
+            'sln-check' = @{
+              version = "$(Build.BuildId)"
+            }
+          }
+        }
+      } | ConvertTo-Json -Depth 10
+
+      Write-Host "Triggering sln-trigger-internal..."
+      Write-Host "POST $uri"
+
+      $response = Invoke-RestMethod -Uri $uri -Method Post `
+        -ContentType 'application/json' `
+        -Authentication Bearer -Token $token `
+        -Body $body
+
+      Write-Host "Triggered run ID: $($response.id)"
+      Write-Host "URL: $($response._links.web.href)"
+    displayName: 'Trigger internal pipeline'
+    condition: eq(variables['hasNewSln'], 'true')
