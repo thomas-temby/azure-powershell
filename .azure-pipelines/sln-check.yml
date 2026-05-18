@@ -7,14 +7,6 @@
 
 trigger: none
 
-pr:
-  branches:
-    include:
-      - main
-  paths:
-    include:
-      - '*'
-
 pool:
   vmImage: 'ubuntu-latest'
 
