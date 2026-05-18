@@ -5,11 +5,13 @@ env:
   PR: ${{ github.event.pull_request.html_url }}
 on:
   pull_request_target:
+    paths:
+      - 'src/**/*.sln'
     types:
       - opened
       - edited
 jobs:
-  process_labels:
+  compare-branches:
     runs-on: ubuntu-latest
     permissions:
       pull-requests: write
@@ -39,7 +41,8 @@ jobs:
 
         if ($files.Count -gt 0) {
           Write-Host "Detected a new module"
-          gh pr edit "$env:PR" --add-label "new module"
+          gh pr edit "$env:PR" --add-label "Module Onboard"
+          .github/workflows/script/PrLabeled.ps1 -LabelName "Module Onboard" -PrUrl $env:PR
         } else {
           Write-Host "No new module detected"
         }
