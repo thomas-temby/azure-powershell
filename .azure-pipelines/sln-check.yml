@@ -7,14 +7,6 @@
 
 trigger: none
 
-pr:
-  branches:
-    include:
-      - main
-  paths:
-    include:
-      - '**/*.sln'
-
 pool:
   vmImage: 'ubuntu-latest'
 
@@ -30,8 +22,9 @@ steps:
       Set-StrictMode -Version Latest
       $ErrorActionPreference = 'Stop'
 
-      # Validate and normalize the target branch
-      $targetBranch = "$(System.PullRequest.TargetBranch)" -replace '^refs/heads/', ''
+      # Validate and normalize the target branch (PR_TargetBranch is a queue-time variable
+      # supplied by the commit auto-trigger; declare it "Settable at queue time" in the pipeline UI).
+      $targetBranch = "$(PR_TargetBranch)" -replace '^refs/heads/', ''
       if ($targetBranch -notmatch '^[a-zA-Z0-9._/-]+$') {
         Write-Error "Invalid target branch name: $targetBranch"
         exit 1
