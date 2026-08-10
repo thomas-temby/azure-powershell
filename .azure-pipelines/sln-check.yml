@@ -1,0 +1,137 @@
+# .azure-pipelines/sln-check.yml
+# PUBLIC pipeline — detects new .sln files in PRs.
+# Contains NO secrets. Safe to run with PR-sourced YAML.
+#
+# When new .sln files are found, this pipeline:
+#   1. Publishes module names + PR commit SHA as an artifact
+#   2. Triggers the internal sln-trigger-internal pipeline via REST API
+#      (using System.AccessToken — no secrets stored in this pipeline)
+#
+# The internal pipeline then:
+#   1. Posts a "pending" GitHub status check ('module-onboarding') to the PR
+#   2. Creates a PR in MCR with the new module manifest entries
+#   3. Waits for the MCR PR to be merged
+#   4. Posts "success" or "failure" to the same GitHub status check
+#
+# Configure GitHub branch protection to require the 'module-onboarding'
+# status check so the PR cannot merge until the internal work finishes.
+#
+# PERMISSIONS:
+#   The public project's build service identity needs 'Queue builds'
+#   permission on pipeline 1201 in the internal project.
+
+trigger: none
+
+pr:
+  branches:
+    include:
+      - main
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+steps:
+  - checkout: self
+    fetchDepth: 0
+    submodules: false
+    persistCredentials: false
+    lfs: false
+
+  - pwsh: |
+      Set-StrictMode -Version 2.0
+      $ErrorActionPreference = 'Stop'
+
+      # Validate and normalize the target branch
+      $targetBranch = "$(System.PullRequest.TargetBranch)" -replace '^refs/heads/', ''
+      if ($targetBranch -notmatch '^[a-zA-Z0-9._/-]+$') {
+        Write-Error "Invalid target branch name: $targetBranch"
+        exit 1
+      }
+
+      Write-Host "Fetching target branch: $targetBranch"
+      git fetch origin "+refs/heads/${targetBranch}:refs/remotes/origin/${targetBranch}"
+
+      # Find new .sln files added in this PR (three-dot = merge-base comparison)
+      $newSlnFiles = git diff --name-only --diff-filter=A "origin/${targetBranch}...HEAD" -- '*.sln'
+
+      if (-not $newSlnFiles) {
+        Write-Host "##[section]No new .sln files found. Nothing to do."
+        Write-Host "##vso[task.setvariable variable=hasNewSln]false"
+        return
+      }
+
+      $slnList = @($newSlnFiles -split "`n" | Where-Object { $_.Trim() -ne '' })
+
+      if ($slnList.Count -gt 10) {
+        Write-Error "Too many new .sln files ($($slnList.Count)). Refusing to proceed — maximum is 10."
+        exit 1
+      }
+
+      Write-Host "##[section]New .sln files detected ($($slnList.Count)):"
+
+      $moduleNames = @()
+      foreach ($slnPath in $slnList) {
+        $slnPath = $slnPath.Trim()
+        $moduleName = [System.IO.Path]::GetFileNameWithoutExtension($slnPath)
+
+        # Validate module name: alphanumeric start, safe characters, max 100 chars
+        if ($moduleName -notmatch '^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,99}$') {
+          Write-Error "Invalid module name derived from '$slnPath': '$moduleName'"
+          exit 1
+        }
+
+        Write-Host "  $slnPath -> ModuleName: $moduleName"
+        $moduleNames += $moduleName
+      }
+
+      # Write module names and PR metadata to artifact for the internal pipeline
+      $artifactDir = Join-Path "$(Build.ArtifactStagingDirectory)" 'sln-check'
+      New-Item -ItemType Directory -Path $artifactDir -Force | Out-Null
+      $moduleNames | Set-Content -Path (Join-Path $artifactDir 'new-modules.txt') -Encoding utf8
+
+      # Include the PR commit SHA so the internal pipeline can post status checks
+      $prSha = "$(Build.SourceVersion)"
+      $prSha | Set-Content -Path (Join-Path $artifactDir 'pr-commit-sha.txt') -Encoding utf8
+
+      Write-Host "PR commit SHA: $prSha"
+      Write-Host "##vso[task.setvariable variable=hasNewSln]true"
+    displayName: 'Detect new SLN files'
+
+  - task: PublishPipelineArtifact@1
+    displayName: 'Publish new module names'
+    condition: eq(variables['hasNewSln'], 'true')
+    inputs:
+      targetPath: '$(Build.ArtifactStagingDirectory)/sln-check'
+      artifactName: 'sln-check'
+
+  - pwsh: |
+      $ErrorActionPreference = 'Stop'
+
+      $orgUrl = "$(System.CollectionUri)".TrimEnd('/')
+      $token = "$(System.AccessToken)" | ConvertTo-SecureString -AsPlainText
+
+      # Trigger sln-trigger-internal (pipeline 1201) in the internal project
+      $uri = "$orgUrl/internal/_apis/pipelines/1201/runs?api-version=7.1-preview.1"
+
+      $body = @{
+        resources = @{
+          pipelines = @{
+            'sln-check' = @{
+              version = "$(Build.BuildId)"
+            }
+          }
+        }
+      } | ConvertTo-Json -Depth 10
+
+      Write-Host "Triggering sln-trigger-internal..."
+      Write-Host "POST $uri"
+
+      $response = Invoke-RestMethod -Uri $uri -Method Post `
+        -ContentType 'application/json' `
+        -Authentication Bearer -Token $token `
+        -Body $body
+
+      Write-Host "Triggered run ID: $($response.id)"
+      Write-Host "URL: $($response._links.web.href)"
+    displayName: 'Trigger internal pipeline'
+    condition: eq(variables['hasNewSln'], 'true')
